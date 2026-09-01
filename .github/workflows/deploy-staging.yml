@@ -1,0 +1,94 @@
+name: Deploy Staging
+
+on:
+  push:
+    branches:
+      - staging
+
+jobs:
+  deploy:
+    name: Staging - link-shortener
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Upload Files to Server
+        uses: appleboy/scp-action@v0.1.6
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 2020
+          source: .
+          target: /tmp/link-shortener-staging
+          timeout: 30s
+          command_timeout: 10m
+
+      - name: Deploy on Staging
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 2020
+          command_timeout: 15m
+          script: |
+            TARGET="/home/muhammadadamfirdaus.com/web/link-shortener-staging/app"
+            DATA_DIR="/home/muhammadadamfirdaus.com/web/link-shortener-staging/data"
+            PM2_NAME="link-shortener-staging"
+            PORT=3001
+
+            echo "📦 Deploying link-shortener staging..."
+
+            mkdir -p $TARGET
+            mkdir -p $DATA_DIR
+
+            # Move uploaded files — only ever touches $TARGET, never $DATA_DIR
+            rm -rf $TARGET/*
+            mv /tmp/link-shortener-staging/* $TARGET/
+            rm -rf /tmp/link-shortener-staging
+
+            # Write .env file
+            echo "✍🏻  Writing .env file..."
+            {
+              echo "PORT=$PORT"
+              echo "DB_PATH=$DATA_DIR/links.db"
+              echo "LINK_PASSCODE=${{ secrets.LINK_PASSCODE }}"
+              echo "TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA"
+              echo "SESSION_SECRET=${{ secrets.SESSION_SECRET }}"
+            } > $TARGET/.env
+
+            cd $TARGET
+
+            # Install dependencies
+            echo "📚 Installing dependencies..."
+            rm -rf node_modules
+            NODE_OPTIONS="--max-old-space-size=1536" npm install
+
+            # Build — Turnstile's published always-pass TEST keys, not real secrets. Staging has no
+            # domain (accessed via raw IP:port), and a real Turnstile widget refuses to render on a
+            # hostname it isn't registered for, so staging intentionally never uses the real keys.
+            echo "🔨 Building..."
+            if ! NEXT_PUBLIC_TURNSTILE_SITE_KEY="1x00000000000000000000AA" NODE_OPTIONS="--max-old-space-size=1536" npm run build; then
+              echo "❌ Build failed!"
+              exit 1
+            fi
+            echo "✅ Build completed"
+
+            # Stop the live app and free its port
+            echo "🖐🏻 Stopping current app..."
+            pm2 delete $PM2_NAME || true
+            sleep 1
+
+            echo "🔪 Freeing port $PORT..."
+            sudo fuser -k -n tcp $PORT 2>/dev/null || true
+            sleep 2
+
+            # Restart PM2
+            echo "♻️  Restarting PM2..."
+            PORT=$PORT pm2 start node_modules/.bin/next --name $PM2_NAME --max-memory-restart 300M -- start
+            pm2 save
+
+            echo "🚀 Staging deploy done — link-shortener"

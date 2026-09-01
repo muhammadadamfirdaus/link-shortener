@@ -1,0 +1,95 @@
+name: Deploy Production
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Production - link-shortener
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Upload Files to Server
+        uses: appleboy/scp-action@v0.1.6
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 2020
+          source: .
+          target: /tmp/link-shortener-production
+          timeout: 30s
+          command_timeout: 10m
+
+      - name: Deploy on Production
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          port: 2020
+          command_timeout: 15m
+          envs: TURNSTILE_SITE_KEY
+          script: |
+            TARGET="/home/muhammadadamfirdaus.com/web/link-shortener/app"
+            DATA_DIR="/home/muhammadadamfirdaus.com/web/link-shortener/data"
+            PM2_NAME="link-shortener"
+            PORT=3002
+
+            echo "📦 Deploying link-shortener production..."
+
+            mkdir -p $TARGET
+            mkdir -p $DATA_DIR
+
+            # Move uploaded files — only ever touches $TARGET, never $DATA_DIR
+            rm -rf $TARGET/*
+            mv /tmp/link-shortener-production/* $TARGET/
+            rm -rf /tmp/link-shortener-production
+
+            # Write .env file
+            echo "✍🏻  Writing .env file..."
+            {
+              echo "PORT=$PORT"
+              echo "DB_PATH=$DATA_DIR/links.db"
+              echo "LINK_PASSCODE=${{ secrets.LINK_PASSCODE }}"
+              echo "TURNSTILE_SECRET_KEY=${{ secrets.TURNSTILE_SECRET_KEY }}"
+              echo "SESSION_SECRET=${{ secrets.SESSION_SECRET }}"
+            } > $TARGET/.env
+
+            cd $TARGET
+
+            # Install dependencies
+            echo "📚 Installing dependencies..."
+            rm -rf node_modules
+            NODE_OPTIONS="--max-old-space-size=1536" npm install
+
+            # Build — NEXT_PUBLIC_* vars are CI-injected at build time only, never in the server .env
+            echo "🔨 Building..."
+            if ! NEXT_PUBLIC_TURNSTILE_SITE_KEY="$TURNSTILE_SITE_KEY" NODE_OPTIONS="--max-old-space-size=1536" npm run build; then
+              echo "❌ Build failed!"
+              exit 1
+            fi
+            echo "✅ Build completed"
+
+            # Stop the live app and free its port
+            echo "🖐🏻 Stopping current app..."
+            pm2 delete $PM2_NAME || true
+            sleep 1
+
+            echo "🔪 Freeing port $PORT..."
+            sudo fuser -k -n tcp $PORT 2>/dev/null || true
+            sleep 2
+
+            # Restart PM2
+            echo "♻️  Restarting PM2..."
+            PORT=$PORT pm2 start node_modules/.bin/next --name $PM2_NAME --max-memory-restart 300M -- start
+            pm2 save
+
+            echo "🚀 Production deploy done — link-shortener"
+        env:
+          TURNSTILE_SITE_KEY: ${{ secrets.TURNSTILE_SITE_KEY }}
