@@ -76,7 +76,9 @@ Server layout (all under the `muhammadadamfirdaus.com` system user on oxv-01):
 |---|---|---|
 | PM2 name | `link-shortener-staging` | `link-shortener` |
 | Port | 3001 | 3002 |
-| Access | `http://103.175.216.196:3001` | `https://m.adamfirda.us` |
+| Access | via SSH tunnel only (see below) | `https://m.adamfirda.us` |
+
+Staging's port isn't reachable from outside the server — the firewall only allows public traffic on 80/443/2020. To browse staging yourself: `ssh -p 2020 -i ~/.ssh/oxv-01 -L 3001:localhost:3001 muhammadadamfirdaus.com@103.175.216.196`, then open `http://localhost:3001` locally while that SSH session stays open. `curl`-based checks from the server itself (`http://localhost:3001/...` over SSH) work fine without a tunnel.
 
 ### Env Vars
 
